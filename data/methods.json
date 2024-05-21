@@ -1,0 +1,47 @@
+{
+    "Differential Equations": [
+        "Euler Method",
+        "Runge.Kutta",
+        "Finite Difference",
+        "Finite Element",
+        "Finite Volume",
+        "Differential Equation",
+        "Partial Differential Equation",
+        "Ordinary Differential Equation",
+        "PDE",
+        "ODE",
+        "Stochastic Differential Equation",
+        "Reaction.Diffusion",
+        "Lotka.Volterra",
+        "Predator.Prey",
+        "Phase.Field",
+        "Compartmental",
+        "Gompertz",
+        "Logistic",
+        "Nonlocal Partial Differential Equation",
+        "Integro.Differential Equation",
+        "Fractional Differential Equation",
+        "Fractal"
+    ],
+    "Agent-Based Models": [
+        "Agent.Based"
+    ],
+    "Game Theory": [
+        "Game Theory",
+        "Nash Equilibrium",
+        "Pareto Optimal",
+        "Prisoner's Dilemma",
+        "Chicken Game",
+        "Stag Hunt"
+    ],
+    "Machine Learning": [
+        "Machine.Learning",
+        "Artificial Intelligence",
+        "Neural Netkwork"
+    ],
+    "Data Driven": [
+        "Data.Driven",
+        "Mechanistic.Learning",
+        "Sindy"
+    ]
+}
