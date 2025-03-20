@@ -1,23 +1,42 @@
-import json
+import numpy as np
 from pathlib import Path
-import requests
-import pandas as pd
 from src.query import extract_bibliographic_data
 from src.preprocessing import check_coverage, pick_random_publications
 from src.plot import generate_plots
 
 
 def main():
-    query = '(DOCTYPE ( ar ) OR DOCTYPE ( re )) AND ("Mathematical Oncology" OR ( TITLE-ABS-KEY("Cancer*" OR "Tumor*" OR "Neoplasm*" OR "Neoplasm" OR "Carcino*" OR "Chemotherapy" OR "Radiotherapy" OR "Cancer Therapy" OR "Immunotherapy") AND ( TITLE-ABS ("Mathematical mode*" OR "Agent-based mode*" OR "Mechanistic mode*" OR "Stochastic mode*" OR "Numerical mode*" OR “Deterministic mode*” OR “Game theor*” OR “Game-theor*” OR (“Computational” AND “Systems Biology”) OR “data-driven” OR “mechanistic learning” OR “differential equation” OR “predator-prey” OR “predator prey”) OR AUTHKEY ("Mathematical mode*" OR "Agent-based mode*" OR "Mechanistic mode*" OR "Stochastic mode*" OR "Numerical mode*" OR “Deterministic mode*” OR “Game theor*” OR “Game-theor*” OR (“Computational” AND “Systems Biology”) OR “data-driven” OR “mechanistic learning” OR “differential equation” OR “predator-prey” OR “predator prey”) ) ) AND NOT(“Molecular Dynamics”))'
-    out_folder = "out_Query21_3"
+    # ------ Init ---------------
+    # set the query number
+    query_number = '29'   
+
+    # create output folder                                    
+    out_folder = Path(f"out/out_Query{query_number}")
+    Path(out_folder).mkdir(exist_ok=True)
+
+    # load data
+    scopus_csv = Path(f'data/Query{query_number}_Scopus.csv')
+    bib_file = Path('data/MathOncoBibliograpy.bib')
+
+    # init seed (used in preprocessing)
+    np.random.seed(221194)
+
+    # ------ Preprocessing ------
+    # Check the query with sampling and coverage
+    out_preprocessing = Path(f"{out_folder}/preprocessing")
+    out_preprocessing.mkdir(exist_ok=True)
+    pick_random_publications(scopus_csv, out_preprocessing)
+    check_coverage(scopus_csv, bib_file, out_preprocessing)
 
     extract_bibliographic_data(
         out_folder_name=out_folder,
-        scopus_csv="data/Query21_Scopus.csv",
+        scopus_csv=scopus_csv,
         config_files=list(Path("config").glob("*.json")),
         modeling_methods_file="data/methods.json",
-        run_search=True
+        run_search=True,
+        limit_entries_to=10
     )
+    exit(0)
 
     generate_plots(data_folder=f"out/{out_folder}",
                    scopus_csv="data/Query21_Scopus.csv")

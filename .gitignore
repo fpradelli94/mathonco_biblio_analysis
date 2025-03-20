@@ -2,7 +2,7 @@
 /config_franci.json
 /data/0_old
 /data/queries/
-/data/Query21_Scopus.csv
+/data/*.csv
 /logs/
 /dump.json
 /.idea
@@ -10,3 +10,5 @@
 /misc/
 /out/*
 *.pyc
+0_old
+.DS_Store
