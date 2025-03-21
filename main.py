@@ -28,6 +28,7 @@ def main():
     pick_random_publications(scopus_csv, out_preprocessing)
     check_coverage(scopus_csv, bib_file, out_preprocessing)
 
+    # ------ Extraction ---------
     extract_bibliographic_data(
         out_folder_name=out_folder,
         scopus_csv=scopus_csv,
@@ -38,8 +39,9 @@ def main():
     )
     exit(0)
 
-    generate_plots(data_folder=f"out/{out_folder}",
-                   scopus_csv="data/Query21_Scopus.csv")
+    # ------ Visualization ------
+    generate_plots(data_folder=f"{out_folder}",
+                   scopus_csv=f"data/Query{query_number}_Scopus.csv")
 
 
 if __name__ == "__main__":
