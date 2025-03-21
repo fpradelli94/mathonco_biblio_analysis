@@ -216,10 +216,16 @@ def search_abstracts(config_files: List[dict],
                                                 "view": "FULL",
                                                 "": ""},
                                         verify=VERIFY)
-            if scp_abstract.status_code != 200:
-                logging.warning(f"Read document {doi} failed for reason: {scp_abstract.json()}. Headers are: {scp_abstract.headers}. Skipping.")
-                continue
             
+            # Manage request response
+            if scp_abstract.status_code == 401:
+                logging.warning(f"Problem with credentials (config: {config}). Check your API key. Breaking")
+                break
+
+            if scp_abstract.status_code != 200:
+                logging.warning(f"Read document {doi} failed for reason (code: {scp_abstract.status_code}): {scp_abstract.json()}. Headers are: {scp_abstract.headers}. Skipping.")
+                continue
+
             scp_abstract = scp_abstract.json()  # get metadata
 
             # Append to output list
@@ -343,12 +349,12 @@ def get_affiliations(publications_list: List[dict],
         # get current_config
         current_config = config_files[current_config_i]
         if req_counter[current_config["apikey"]] >= req_limit:
-            current_config_i = current_config_i + 1
-            if current_config_i >= len(config_files):
+            if (current_config_i + 1) >= len(config_files):
                 logging.warning("All configs have reached the request limit. Appending only the info available now.")
                 output_data_list.append(current_row.to_dict())
                 continue
             else:
+                current_config_i = current_config_i + 1
                 current_config = config_files[current_config_i]   
             
         # get more detailed institute info with elsapy
@@ -360,6 +366,8 @@ def get_affiliations(publications_list: List[dict],
         # Check code reponse
         if res.status_code != 200:
             logging.info(f"Could not retrive info for institution with id {institute_id}. Skipping.")
+            logging.info(f"Response: {res.headers}")
+            exit(0)
             output_data_list.append(current_row.to_dict())
             continue
         result_dict = res.json()
