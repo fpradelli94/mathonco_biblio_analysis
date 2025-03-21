@@ -17,9 +17,15 @@ def check_coverage(scopus_csv: Path,
 
     # Load bibliography data
     bib_data = parse_file(bib_file)
-    bib_titles = [e.fields["title"].replace(" ", "").casefold() for e in bib_data.entries.values()]
-    bib_full_titles = [e.fields["title"] for e in bib_data.entries.values()]
-    bib_dois = [e.fields.get("doi", None) for e in bib_data.entries.values()]
+
+    # Get titles and DOIs for those which are not preprints
+    preprint_publishers = ["Cold Spring Harbor Laboratory", "arXiv"]
+    bib_titles = [e.fields["title"].replace(" ", "").casefold() for e in bib_data.entries.values() 
+                  if e.fields['publisher'] not in preprint_publishers]
+    bib_full_titles = [e.fields["title"] for e in bib_data.entries.values()
+                       if e.fields['publisher'] not in preprint_publishers]
+    bib_dois = [e.fields.get("doi", None) for e in bib_data.entries.values()
+                if e.fields['publisher'] not in preprint_publishers]
     
     # Check coverage
     n_bib_titles = len(bib_titles)
