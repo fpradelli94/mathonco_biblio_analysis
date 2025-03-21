@@ -692,7 +692,6 @@ def extract_quartile_for_publications(publications_list: List[dict],
 
         # get publication year
         publication_year = int(scp_abstract_source["publicationdate"]["year"])
-        print(publication_year)
 
         # get quartile
         if publication_year < 2015:
