@@ -34,10 +34,8 @@ def main():
         scopus_csv=scopus_csv,
         config_files=list(Path("config").glob("*.json")),
         modeling_methods_file="data/methods.json",
-        run_search=True,
-        limit_entries_to=10
+        run_search=True
     )
-    exit(0)
 
     # ------ Visualization ------
     generate_plots(data_folder=f"{out_folder}",
