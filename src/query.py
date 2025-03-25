@@ -341,50 +341,69 @@ def get_affiliations(publications_list: List[dict],
     raw_df.to_csv(institutions_file.parent / Path("institutions_raw.csv"), index=False)
 
     # get more detailed information for each institution
-    req_counter = Counter([c["apikey"] for c in config_files])      # init counters
     current_config_i = 0                            # init current config file
     output_data_list = []                           # init output list
     output_json = []                                # init output json
+    exhausted_config = False
     for _, current_row in tqdm(raw_df.iterrows(), desc="Getting detailed information for institutions"):
-        # get current_config
+        # get current config
         current_config = config_files[current_config_i]
-        if req_counter[current_config["apikey"]] >= req_limit:
-            if (current_config_i + 1) >= len(config_files):
-                logging.warning("All configs have reached the request limit. Appending only the info available now.")
-                output_data_list.append(current_row.to_dict())
-                continue
-            else:
-                current_config_i = current_config_i + 1
-                current_config = config_files[current_config_i]   
-            
-        # get more detailed institute info with elsapy
-        res = requests.get(url=f"{affiliation_retrival_url}{current_row['scopus_id']}",
-                           params={"apiKey": current_config["apikey"], 
-                                   "httpAccept": "application/json"},
-                           verify=VERIFY)
-        
-        # Check code reponse
-        if res.status_code != 200:
-            logging.info(f"Could not retrive info for institution with id {institute_id}. Skipping.")
-            logging.info(f"Response: {res.headers}")
-            exit(0)
+
+        # try request
+        if not exhausted_config:
+            res = requests.get(url=f"{affiliation_retrival_url}{current_row['scopus_id']}",
+                            params={"apiKey": current_config["apikey"], 
+                                    "httpAccept": "application/json"},
+                            verify=VERIFY)
+        else:
+            logging.warning("All configs have reached the request limit. Appending only the info available now.")
             output_data_list.append(current_row.to_dict())
             continue
+
+        # get response code
+        res_code = res.status_code
+
+        # Manage limit reached 
+        if (res_code == 401) or (res_code == 429): 
+            if (current_config_i + 1) >= len(config_files):
+                # all configurations files have reached the limit. Save current info "as is"
+                logging.warning("All configs have reached the request limit. Appending only the info available now.")
+                output_data_list.append(current_row.to_dict())
+
+                # and set the flag to true. No more requests will be done
+                exhausted_config = True
+                continue
+            else:
+                # use the nex config file
+                current_config_i = current_config_i + 1
+                current_config = config_files[current_config_i]
+                res = requests.get(url=f"{affiliation_retrival_url}{current_row['scopus_id']}",
+                            params={"apiKey": current_config["apikey"], 
+                                    "httpAccept": "application/json"},
+                            verify=VERIFY)
+
+        # Manage othe  issues  
+        if res.status_code != 200:
+            # If an exception occurr, just save the data as they are and continue
+            logging.info(f"Could not retrive info for institution with id {institute_id}. Skipping.")
+            logging.info(f"Response (res code: {res.status_code}): {res.headers}")
+            output_data_list.append(current_row.to_dict())
+            continue
+
+        # If everything worked well, get results
         result_dict = res.json()
 
-        # add to counter
-        req_counter[current_config["apikey"]] += 1
-
-        # extract data
+        # and xtract data
         current_res_dict = current_row.to_dict()  # Transform to dict for easier update
         institute_data = result_dict["affiliation-retrieval-response"]
         current_res_dict[f"institute_name"] = institute_data["institution-profile"]["preferred-name"]["$"]  # get prefferred name
-        if isinstance(institute_data["institution-profile"]["address"], dict):
-            # get detailed address
-            institute_address = institute_data["institution-profile"]["address"]
-            for key in ["city", "state", "country"]:
-                if key in institute_address.keys():
-                    current_res_dict[f"institute_{key}"] = institute_address[key]
+        if "address" in institute_data["institution-profile"].keys():
+            if isinstance(institute_data["institution-profile"]["address"], dict):
+                # get detailed address
+                institute_address = institute_data["institution-profile"]["address"]
+                for key in ["city", "state", "country"]:
+                    if key in institute_address.keys():
+                        current_res_dict[f"institute_{key}"] = institute_address[key]
         output_data_list.append(current_res_dict)
 
     # save table
@@ -434,8 +453,14 @@ def get_funding_sponsors(publications_list: List[dict],
             current_res_dict = funding_sponsor
             if "xocs:funding-id" in current_res_dict.keys():
                 if isinstance(current_res_dict["xocs:funding-id"], list):
-                    funding_id_list = ", ".join([str(item["$"]) for item in current_res_dict["xocs:funding-id"] if item["$"] is not None])
-                    current_res_dict["xocs:funding-id"] = funding_id_list
+                    current_funding_id_list = []
+                    for item in current_res_dict["xocs:funding-id"]:
+                        if isinstance(item, dict):
+                            current_funding_id_list.append(item['$'])
+                        if isinstance(item, str):
+                            current_funding_id_list.append(item)
+                    funding_id_str = ", ".join(current_funding_id_list)
+                    current_res_dict["xocs:funding-id"] = funding_id_str
             current_res_list.append(current_res_dict)
                     
         # generate table
@@ -808,17 +833,16 @@ def extract_bibliographic_data(
             clients_array.append(current_client)
 
     # Get list of abstracts
-    publications_list = search_abstracts(config_array, scopus_csv, abstracts_file=abstracts_file, run_search=run_search)
+    publications_list = search_abstracts(config_array, scopus_csv, abstracts_file=abstracts_file, run_search=False)
 
     # Search journals
-    _ = generate_journals_csv(scopus_csv, journals_file, config_array, run_search=run_search)
+    _ = generate_journals_csv(scopus_csv, journals_file, config_array, run_search=False)
 
     # Search authors
     _ = get_authors(publications_list, authors_file=authors_file)
-
     
     # Search affiliations
-    _ = get_affiliations(publications_list, institutions_file=institutions_file, config_files=config_array, run_search=run_search)
+    _ = get_affiliations(publications_list, institutions_file=institutions_file, config_files=config_array, run_search=False)
 
     # Searc funding sponsors
     _ = get_funding_sponsors(publications_list, funding_sponsors_file=funding_sponsors_file)
