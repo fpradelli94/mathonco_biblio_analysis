@@ -28,14 +28,74 @@ scoups_titles_base_url_issn = "https://api.elsevier.com/content/serial/title/iss
 scopus_api_abstract_base_url = "https://api.elsevier.com/content/abstract/doi/"  # necessary to get abstract metadata
 affiliation_retrival_url = "https://api.elsevier.com/content/affiliation/affiliation_id/"
 scival_metrics_url = "https://api.elsevier.com/analytics/scival/scopusSource/metrics"  # necessary to get journal metrics
+scopus_content_search = "https://api.elsevier.com/content/search/scopus"  # necessary to get publication metadata
+
+
+def _check_query_count(config: dict, api_urls: List[str] = None) -> int:
+    """
+    Check query availability for one API key.
+    """
+    # get default APIs if not provided
+    if api_urls is None:
+        api_urls = [
+            scoups_titles_base_url_issn,
+            scopus_api_abstract_base_url,
+            f"{affiliation_retrival_url}{60004948}",  # example affiliation ID
+            scival_metrics_url,
+            scopus_content_search
+        ]
+
+    # iterate on API URLs
+    for api_url in api_urls:
+        # get query count
+        res = requests.get(url=api_url,
+                           params={"apiKey": config["apikey"]},
+                           verify=VERIFY)
+        # get headers
+        headers = res.headers
+        # get query count
+        query_count = headers.get("X-RateLimit-Limit")
+        # get remaining queries
+        remaining_queries = headers.get("X-RateLimit-Remaining")
+        # inform user
+        logging.info(f"API URL: {api_url} - Query count: {query_count} - Remaining queries: {remaining_queries}")
+        # check if query count is 0
+        if int(remaining_queries) == 0:
+            raise ValueError(f"API URL: {api_url} - Query count is 0. Please check your API key.")
+        
+
+def _manage_requests(url: str, params: dict) -> requests.Response:
+    """
+    Manage requests to the API. All requests are done with this method.
+    :param config: configuration dictionary.
+    :param url: URL to send the request to.
+    :param params: parameters to send with the request.
+    :return: response object.
+    """
+    # get response
+    res = requests.get(url=url,
+                       params=params,
+                       verify=VERIFY)
+    
+    # check if response is 200
+    if res.status_code != 200:
+        # if response is 401, check query count
+        if res.status_code == 401:
+            raise ValueError(f"Problem with credentials. Header is {res.headers}. Check your API key.")
+        # if response is 429, check query count
+        elif res.status_code == 429:
+            raise ValueError(f"Query limit reached. Header is {res.headers}. Check your API key.")
+        else:
+            raise ValueError(f"Request failed with status code {res.status_code}. Header is {res.headers}.")
+        
+    # return response
+    return res
 
 
 def search_publications(search_string: str, 
                         config: dict, 
-                        client: ElsClient,
                         publications_file: Path,
-                        run_search: bool = False,
-                        get_all: bool = False) -> pd.DataFrame:
+                        run_search: bool = False) -> pd.DataFrame:
     """
     Generate table with all MathOnco publications.
     """
@@ -43,13 +103,17 @@ def search_publications(search_string: str,
     if publications_file.exists() and not run_search:
         return pd.read_csv(publications_file)
     
-    # Search MathOnco publications
-    doc_srch = ElsSearch(search_string, 'scopus')
-    doc_srch.execute(client, get_all = get_all)
+    # Make request
+    res = _manage_requests(scopus_content_search, 
+                           {"query": search_string, 
+                            "apiKey": config["apikey"],
+                            "httpAccept": "application/json",
+                            "view": "COMPLETE"})
+    res_data_list = res.json()  # get metadata
 
     # Iterate over publications
     output_table = []  # init output table as list
-    for res_data in doc_srch.results:
+    for res_data in res_data_list["search-results"]["entry"]:
         # init dict for the current record
         current_res_dict = {}  # init dict for the current record
 
@@ -86,9 +150,8 @@ def search_publications(search_string: str,
 
 def generate_journals_csv(scopus_df: pd.DataFrame,
                           journals_file: Path,
-                          config_files: List[dict],
-                          run_search: bool = False,
-                          req_limit: int = 19950) -> pd.DataFrame:
+                          config: dict,
+                          run_search: bool = False) -> pd.DataFrame:
     """
     Get the journals (sources) where the publications were published.
     """
@@ -106,63 +169,53 @@ def generate_journals_csv(scopus_df: pd.DataFrame,
     # get unique values for journal issn
     journals_issns_unique = journals_counts["journal_issn"]
 
-    # given that only a certain number of requests can be made, we will get the abstracts in chunks
-    n_issns = len(journals_issns_unique)
-    issns_chunks = [journals_issns_unique[i:i+req_limit] for i in range(0, n_issns, req_limit)]
-    if len(issns_chunks) > len(config_files):
-        logging.warning(f"Number of chunks ({len(issns_chunks)}) is greater than the number of available API keys ({len(config_files)}). Some chunks will not be processed")
-        issns_chunks = issns_chunks[:len(config_files)]
-    else:
-        config_files = config_files[:len(issns_chunks)]
-
     # init output table
     output_df = pd.DataFrame()
 
     # get metadata for each journal
-    for issns_chunk, config in zip(issns_chunks, config_files):
-        for j_issn in tqdm(issns_chunk, desc="Getting journal metadata"):
-            # query API for journal metadata
-            journal_info = requests.get(url=f"{scoups_titles_base_url_issn}{j_issn}",
-                                        params={"apiKey": config["apikey"]},
-                                        verify=VERIFY).json()
-            
-            # If journal metadata not found, log and skip
-            if "serial-metadata-response" not in journal_info.keys():
-                logging.warning(f"Journal metadata not found for journal ISSN {j_issn}. I found the following keys: {journal_info.keys()}. Skipping.")
-                continue
-            journal_info = journal_info["serial-metadata-response"]["entry"][0]
+    for j_issn in tqdm(journals_issns_unique, desc="Getting journal metadata"):
+        # query API for journal metadata
+        res = _manage_requests(url=f"{scoups_titles_base_url_issn}{j_issn}",
+                               params={"apiKey": config["apikey"]})
+        journal_info = res.json()
+        
+        # If journal metadata not found, log and skip
+        if "serial-metadata-response" not in journal_info.keys():
+            logging.warning(f"Journal metadata not found for journal ISSN {j_issn}. I found the following keys: {journal_info.keys()}. Skipping.")
+            continue
+        journal_info = journal_info["serial-metadata-response"]["entry"][0]
 
-            # init current record for journal
-            current_res_dict = {}
+        # init current record for journal
+        current_res_dict = {}
 
-            # get journal name
-            current_res_dict["journal_issn"] = j_issn
-            current_res_dict["scopus_id"] = journal_info["source-id"]
-            current_res_dict["title"] = journal_info["dc:title"]
+        # get journal name
+        current_res_dict["journal_issn"] = j_issn
+        current_res_dict["scopus_id"] = journal_info["source-id"]
+        current_res_dict["title"] = journal_info["dc:title"]
 
-            # get journal citescore
-            if "citeScoreYearInfoList" not in journal_info.keys():
-                logging.warning(f'CiteScore information not found for journal ISSN {j_issn}. I found the following keys: {journal_info.keys()}. Skipping.')
-                continue
-            if "citeScoreCurrentMetric" not in journal_info["citeScoreYearInfoList"].keys():
-                logging.warning(f'CiteScore information not found for journal ISSN {j_issn}. I found: {journal_info["citeScoreYearInfoList"].keys()}. Skipping.')
-                continue
-            current_res_dict["journal_citescore"] = journal_info["citeScoreYearInfoList"]["citeScoreCurrentMetric"]
+        # get journal citescore
+        if "citeScoreYearInfoList" not in journal_info.keys():
+            logging.warning(f'CiteScore information not found for journal ISSN {j_issn}. I found the following keys: {journal_info.keys()}. Skipping.')
+            continue
+        if "citeScoreCurrentMetric" not in journal_info["citeScoreYearInfoList"].keys():
+            logging.warning(f'CiteScore information not found for journal ISSN {j_issn}. I found: {journal_info["citeScoreYearInfoList"].keys()}. Skipping.')
+            continue
+        current_res_dict["journal_citescore"] = journal_info["citeScoreYearInfoList"]["citeScoreCurrentMetric"]
 
-            # get journal subjects
-            current_res_dict[f"subject_code(s)"] = "; ".join([sa["@code"] for sa in journal_info["subject-area"]])
-            current_res_dict[f"subject_abbrev(s)"] = "; ".join([sa["@abbrev"] for sa in journal_info["subject-area"]])
-            current_res_dict[f"subject_name(s)"] = "; ".join([sa["$"] for sa in journal_info["subject-area"]])
+        # get journal subjects
+        current_res_dict[f"subject_code(s)"] = "; ".join([sa["@code"] for sa in journal_info["subject-area"]])
+        current_res_dict[f"subject_abbrev(s)"] = "; ".join([sa["@abbrev"] for sa in journal_info["subject-area"]])
+        current_res_dict[f"subject_name(s)"] = "; ".join([sa["$"] for sa in journal_info["subject-area"]])
 
-            # get open access info
-            current_res_dict["openaccess"] = journal_info["openaccess"]
-            current_res_dict["openaccessType"] = journal_info["openaccessType"]
+        # get open access info
+        current_res_dict["openaccess"] = journal_info["openaccess"]
+        current_res_dict["openaccessType"] = journal_info["openaccessType"]
 
-            # generate table
-            current_res_df = pd.DataFrame([current_res_dict])
+        # generate table
+        current_res_df = pd.DataFrame([current_res_dict])
 
-            # append to output table
-            output_df = pd.concat([output_df, current_res_df], ignore_index=True)
+        # append to output table
+        output_df = pd.concat([output_df, current_res_df], ignore_index=True)
 
     # join number of publications to output table
     output_df = output_df.merge(journals_counts, on="journal_issn", how="left")
@@ -174,11 +227,10 @@ def generate_journals_csv(scopus_df: pd.DataFrame,
     return output_df
 
 
-def search_abstracts(config_files: List[dict],
+def search_abstracts(config: dict,
                      scopus_csv: pd.DataFrame,
                      abstracts_file: Path,
-                     run_search: bool = False,
-                     req_limit: int = 9950) -> List[AbsDoc]:
+                     run_search: bool = False) -> List[AbsDoc]:
     """
     Get and read AbsDocs.
 
@@ -196,40 +248,18 @@ def search_abstracts(config_files: List[dict],
     # get list of scopus ids
     dois = scopus_csv["DOI"].dropna().tolist()
 
-    # given that only a certain number of requests can be made, we will get the abstracts in chunks
-    n_dois = len(dois)
-    dois_chunks = [dois[i:i+req_limit] for i in range(0, n_dois, req_limit)]
-    if len(dois_chunks) > len(config_files):
-        logging.warning(f"Number of chunks ({len(dois_chunks)}) is greater than the number of available API keys ({len(config_files)}). Some chunks will not be processed")
-        dois_chunks = dois_chunks[:len(config_files)]
-    else:
-        config_files = config_files[:len(dois_chunks)]
-
     # get AbsDocs
     output_list = []
-    for doi_chunk, config in zip(dois_chunks, config_files):
-        for doi in tqdm(doi_chunk, desc="Getting abstracts"):
-            # get abstract metadata
-            scp_abstract = requests.get(url=f"{scopus_api_abstract_base_url}{doi}",
-                                        params={"apiKey": config["apikey"], 
-                                                "httpAccept": "application/json", 
-                                                "view": "FULL",
-                                                "": ""},
-                                        verify=VERIFY)
-            
-            # Manage request response
-            if scp_abstract.status_code == 401:
-                logging.warning(f"Problem with credentials (config: {config}). Check your API key. Breaking")
-                break
+    for doi in tqdm(dois, desc="Getting abstracts"):
+        # get abstract metadata
+        res = _manage_requests(url=f"{scopus_api_abstract_base_url}{doi}",
+                               params={"apiKey": config["apikey"], 
+                                       "httpAccept": "application/json", 
+                                       "view": "FULL"})
+        scp_abstract = res.json()
 
-            if scp_abstract.status_code != 200:
-                logging.warning(f"Read document {doi} failed for reason (code: {scp_abstract.status_code}): {scp_abstract.json()}. Headers are: {scp_abstract.headers}. Skipping.")
-                continue
-
-            scp_abstract = scp_abstract.json()  # get metadata
-
-            # Append to output list
-            output_list.append(scp_abstract)
+        # Append to output list
+        output_list.append(scp_abstract)
 
     # Chache content to json
     with open(abstracts_file, "w") as outfile:
@@ -288,14 +318,13 @@ def get_authors(publications_list: List[dict],
 
 def get_affiliations(publications_list: List[dict],
                      institutions_file: Path,
-                     config_files: List[dict],
-                     run_search: bool = False,
-                     req_limit=4950) -> pd.DataFrame:
+                     config: dict,
+                     run_search: bool = False) -> pd.DataFrame:
     """
     From the publications table, get institution metadata. Store the results in a table called out/institutions.csv.
     """
-    # iterate over documents
-    raw_data_list = []          # init raw data list
+    # init raw data list
+    raw_data_list = []          
 
     # check if is necessary to run search
     if institutions_file.exists() and not run_search:
@@ -341,70 +370,34 @@ def get_affiliations(publications_list: List[dict],
     raw_df.to_csv(institutions_file.parent / Path("institutions_raw.csv"), index=False)
 
     # get more detailed information for each institution
-    current_config_i = 0                            # init current config file
     output_data_list = []                           # init output list
     output_json = []                                # init output json
-    exhausted_config = False
-    for _, current_row in tqdm(raw_df.iterrows(), desc="Getting detailed information for institutions"):
-        # get current config
-        current_config = config_files[current_config_i]
-
-        # try request
-        if not exhausted_config:
-            res = requests.get(url=f"{affiliation_retrival_url}{current_row['scopus_id']}",
-                            params={"apiKey": current_config["apikey"], 
-                                    "httpAccept": "application/json"},
-                            verify=VERIFY)
-        else:
-            logging.warning("All configs have reached the request limit. Appending only the info available now.")
-            output_data_list.append(current_row.to_dict())
-            continue
-
-        # get response code
-        res_code = res.status_code
-
-        # Manage limit reached 
-        if (res_code == 401) or (res_code == 429): 
-            if (current_config_i + 1) >= len(config_files):
-                # all configurations files have reached the limit. Save current info "as is"
-                logging.warning("All configs have reached the request limit. Appending only the info available now.")
-                output_data_list.append(current_row.to_dict())
-
-                # and set the flag to true. No more requests will be done
-                exhausted_config = True
-                continue
-            else:
-                # use the nex config file
-                current_config_i = current_config_i + 1
-                current_config = config_files[current_config_i]
-                res = requests.get(url=f"{affiliation_retrival_url}{current_row['scopus_id']}",
-                            params={"apiKey": current_config["apikey"], 
-                                    "httpAccept": "application/json"},
-                            verify=VERIFY)
-
-        # Manage othe  issues  
-        if res.status_code != 200:
-            # If an exception occurr, just save the data as they are and continue
-            logging.info(f"Could not retrive info for institution with id {institute_id}. Skipping.")
-            logging.info(f"Response (res code: {res.status_code}): {res.headers}")
-            output_data_list.append(current_row.to_dict())
-            continue
+    for _, current_row in tqdm(raw_df.iterrows(), desc="Detailed info on insts"):
+        res = _manage_requests(url=f"{affiliation_retrival_url}{current_row['scopus_id']}",
+                               params={"apiKey": config["apikey"], 
+                                       "httpAccept": "application/json"})
 
         # If everything worked well, get results
         result_dict = res.json()
 
-        # and xtract data
-        current_res_dict = current_row.to_dict()  # Transform to dict for easier update
-        institute_data = result_dict["affiliation-retrieval-response"]
+        # and extract data
+        current_res_dict = current_row.to_dict()                                                            # transform to dict for easier update
+        institute_data = result_dict["affiliation-retrieval-response"]                                      # get response data
         current_res_dict[f"institute_name"] = institute_data["institution-profile"]["preferred-name"]["$"]  # get prefferred name
-        if "address" in institute_data["institution-profile"].keys():
-            if isinstance(institute_data["institution-profile"]["address"], dict):
-                # get detailed address
-                institute_address = institute_data["institution-profile"]["address"]
-                for key in ["city", "state", "country"]:
-                    if key in institute_address.keys():
-                        current_res_dict[f"institute_{key}"] = institute_address[key]
+
+        # check if data on address is available
+        if "address" in institute_data["institution-profile"].keys() and isinstance(institute_data["institution-profile"]["address"], dict):
+            # get detailed address
+            institute_address = institute_data["institution-profile"]["address"]
+            for key in ["city", "state", "country"]:
+                if key in institute_address:
+                    current_res_dict[f"institute_{key}"] = institute_address[key]
+        else:
+            logging.warning(f"No address information found for institution {current_row['institute_name']}. Skipping.")
+
+        # append to output files
         output_data_list.append(current_res_dict)
+        output_json.append(institute_data) 
 
     # save table
     output_df = pd.DataFrame(output_data_list)
@@ -646,11 +639,10 @@ def get_modeling_approaches(scopus_df: pd.DataFrame,
     return output_df
 
 
-def search_journals_metrics(config_files: List[dict],
+def search_journals_metrics(config: dict,
                             journals_df: pd.DataFrame,
                             journals_metrics_JSON: Path,
-                            run_search: bool = False,
-                            req_limit: int = 4950) -> dict:
+                            run_search: bool = False) -> dict:
     """
     Download journal metrics from SciVal Scopus API.
     """
@@ -663,32 +655,16 @@ def search_journals_metrics(config_files: List[dict],
     scopus_ids = [str(id) for id in journals_df["scopus_id"].tolist()]
     scopus_ids = [scopus_ids[i:i+25] for i in range(0, len(scopus_ids), 25)]
 
-    # subdivide in chunks to meet thr requests limit
-    scopus_ids_chunks = [scopus_ids[i:i+req_limit] for i in range(0, len(scopus_ids), req_limit)]
-    if len(scopus_ids_chunks) > len(config_files):
-        logging.warning(f"Number of chunks ({len(scopus_ids_chunks)}) is greater than the number of available API keys ({len(config_files)}). Some chunks will not be processed")
-        scopus_ids_chunks = scopus_ids_chunks[:len(config_files)]
-    else:
-        config_files = config_files[:len(scopus_ids_chunks)]
-
     # iterate on sublists
     output_list = []
-    for scopus_ids_chunk, config in zip(scopus_ids_chunks, config_files):
-        for sublist in tqdm(scopus_ids_chunk, desc="Getting journal metrics"):
-            # get journal metrics
-            res = requests.get(scival_metrics_url,
+    for sublist in tqdm(scopus_ids, desc="Getting journal metrics"):
+        # get journal metrics
+        res = _manage_requests(url=scival_metrics_url,
                                params={"apiKey": config["apikey"],
                                        "metricTypes": "PublicationsInTopJournalPercentiles,OutputsInTopCitationPercentiles",
                                        "sourceIds": ",".join(sublist),
-                                       "yearRange": "10yrs"},
-                               verify=VERIFY)
-            # verify response
-            if res.status_code != 200:
-                logging.warning(f"Journal metrics failed with the following response: {res.headers}")
-                logging.warning(f"Skipping")
-                continue
-            
-            output_list += res.json()["results"]
+                                       "yearRange": "10yrs"})
+        output_list += res.json()["results"]
     
     # save json
     with open(journals_metrics_JSON, "w") as outfile:
@@ -783,7 +759,7 @@ def extract_quartile_for_publications(publications_list: List[dict],
 def extract_bibliographic_data(
     out_folder_name: str,
     scopus_csv: str,
-    config_files: List[str],
+    config_file: Path,
     modeling_methods_file: str = "data/methods.json",
     run_search: bool = False,
     limit_entries_to: int = None) -> None:
@@ -822,27 +798,23 @@ def extract_bibliographic_data(
     publications_quartile_file = current_output_folder / Path("publications_quartile.csv")
 
     # Load configuration
-    config_array = []
-    clients_array = []
-    for config_file in config_files:
-        with open(config_file, "r") as infile:
-            config = json.load(infile)
-            config_array.append(config)
-            current_client = ElsClient(config['apikey'])
-            current_client.inst_token = config['insttoken']
-            clients_array.append(current_client)
+    with open(config_file, "r") as infile:
+        config = json.load(infile)
+
+    # Check amount of remiaining requests
+    _check_query_count(config)
 
     # Get list of abstracts
-    publications_list = search_abstracts(config_array, scopus_csv, abstracts_file=abstracts_file, run_search=False)
+    publications_list = search_abstracts(config, scopus_csv, abstracts_file=abstracts_file, run_search=False)
 
     # Search journals
-    _ = generate_journals_csv(scopus_csv, journals_file, config_array, run_search=False)
+    _ = generate_journals_csv(scopus_csv, journals_file, config, run_search=False)
 
     # Search authors
     _ = get_authors(publications_list, authors_file=authors_file)
     
     # Search affiliations
-    _ = get_affiliations(publications_list, institutions_file=institutions_file, config_files=config_array, run_search=False)
+    _ = get_affiliations(publications_list, institutions_file=institutions_file, config=config, run_search=False)
 
     # Searc funding sponsors
     _ = get_funding_sponsors(publications_list, funding_sponsors_file=funding_sponsors_file)
@@ -861,7 +833,7 @@ def extract_bibliographic_data(
     _ = get_modeling_approaches(scopus_csv, modeling_approaches=modeling_approaches_list, modeling_approaches_file=modeling_approaches_file)
 
     # Get journal metrics
-    journal_metrics = search_journals_metrics(config_array, journals_df=pd.read_csv(journals_file), journals_metrics_JSON=journals_metrics_json, run_search=run_search)
+    journal_metrics = search_journals_metrics(config, journals_df=pd.read_csv(journals_file), journals_metrics_JSON=journals_metrics_json, run_search=run_search)
 
     # Get quartile for each publication
     _ = extract_quartile_for_publications(publications_list, journal_metrics, publications_quartile_file)
