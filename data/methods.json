@@ -24,15 +24,21 @@
         "Fractal"
     ],
     "Agent-Based Models": [
-        "Agent.Based"
+        "Agent.Based",
+        "Cellular.Automata",
+        "Individual.Based"
     ],
     "Game Theory": [
-        "Game Theory",
+        "Game.Theor",
         "Nash Equilibrium",
         "Pareto Optimal",
         "Prisoner's Dilemma",
-        "Chicken Game",
-        "Stag Hunt"
+        "Chicken.Game",
+        "Stag.Hunt",
+        "Lotka.Volterra",
+        "Predator.Prey",
+        "Public.Goods Game",
+        "Public.Good Game"
     ],
     "Machine Learning": [
         "Machine.Learning",
