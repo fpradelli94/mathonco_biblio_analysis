@@ -49,5 +49,8 @@
         "Data.Driven",
         "Mechanistic.Learning",
         "Sindy"
+    ],
+    "Translational": [
+        "Translat"
     ]
 }

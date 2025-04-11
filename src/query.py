@@ -20,7 +20,7 @@ OUTPUT_FOLDER = Path("out")
 OUTPUT_FOLDER.mkdir(exist_ok=True, parents=True)
 
 # Enable requests verification (reccomended)
-VERIFY = True
+VERIFY = False
  
 
 # APIs
@@ -57,8 +57,10 @@ def _check_query_count(config: dict, api_urls: List[str] = None) -> int:
         query_count = headers.get("X-RateLimit-Limit")
         # get remaining queries
         remaining_queries = headers.get("X-RateLimit-Remaining")
+        # get reset date
+        reset_date = headers.get("X-RateLimit-Reset")
         # inform user
-        logging.info(f"API URL: {api_url} - Query count: {query_count} - Remaining queries: {remaining_queries}")
+        logging.info(f"API URL: {api_url} - Query count: {query_count} - Remaining queries: {remaining_queries} - Reset date: {reset_date}")
         # check if query count is 0
         if int(remaining_queries) == 0:
             raise ValueError(f"API URL: {api_url} - Query count is 0. Please check your API key.")
@@ -86,7 +88,9 @@ def _manage_requests(url: str, params: dict) -> requests.Response:
         elif res.status_code == 429:
             raise ValueError(f"Query limit reached. Header is {res.headers}. Check your API key.")
         else:
-            raise ValueError(f"Request failed with status code {res.status_code}. Header is {res.headers}.")
+            # let the method manage the error
+            logging.warning(f"Request failed with status code {res.status_code}. Header is {res.headers}.")
+            return res
         
     # return response
     return res
@@ -155,9 +159,18 @@ def generate_journals_csv(scopus_df: pd.DataFrame,
     """
     Get the journals (sources) where the publications were published.
     """
+    # create temp file
+    journals_temp_file = Path(str(journals_file).replace(".csv", "_temp.csv"))
+    if journals_temp_file.exists():
+        journals_df = pd.read_csv(journals_temp_file)
+        retrieved_issns = journals_df["journal_issn"].tolist()
+    else:
+        journals_df = pd.DataFrame()
+        retrieved_issns = []
+
     # check if is necessary to run search
     if journals_file.exists() and not run_search:
-        return pd.read_csv(journals_file)
+        return journals_df
     
     # get issn for each journal
     journals_issns = scopus_df["ISSN"]
@@ -170,13 +183,25 @@ def generate_journals_csv(scopus_df: pd.DataFrame,
     journals_issns_unique = journals_counts["journal_issn"]
 
     # init output table
-    output_df = pd.DataFrame()
+    output_df = journals_df
 
     # get metadata for each journal
     for j_issn in tqdm(journals_issns_unique, desc="Getting journal metadata"):
+        # check if issn is already retrieved
+        if j_issn in retrieved_issns:
+            logging.warning(f"Journal with ISSN: {j_issn} already retrieved. Skipping.")
+            continue
+
         # query API for journal metadata
         res = _manage_requests(url=f"{scoups_titles_base_url_issn}{j_issn}",
                                params={"apiKey": config["apikey"]})
+        
+        # Manage 404 error
+        if res.status_code == 404:
+            logging.warning(f"Journal with ISSN: {j_issn} not found. Skipping.")
+            continue
+
+        # If no error occurred, get json
         journal_info = res.json()
         
         # If journal metadata not found, log and skip
@@ -217,11 +242,18 @@ def generate_journals_csv(scopus_df: pd.DataFrame,
         # append to output table
         output_df = pd.concat([output_df, current_res_df], ignore_index=True)
 
+        # save table
+        output_df.to_csv(journals_temp_file, index=False)
+
     # join number of publications to output table
     output_df = output_df.merge(journals_counts, on="journal_issn", how="left")
 
     # save table
     output_df.to_csv(journals_file, index=False)
+
+    # remove temp file
+    if journals_temp_file.exists():
+        journals_temp_file.unlink()
 
     # return table
     return output_df
@@ -240,17 +272,32 @@ def search_abstracts(config: dict,
     :param abstracts_file: Path to save the abstracts.
     :param run_search: bool to run the search or not.
     """
-    # check if is necessary to run search
+    # load retrived abstracts if available
+    abstracts_temp_file = Path(str(abstracts_file).replace(".json", "_temp.json"))
+    if abstracts_file.exists():
+        with open(abstracts_temp_file, "r") as infile:
+            retrived_abstract = json.load(infile)
+    else: 
+        retrived_abstract = []
+
     if not run_search and abstracts_file.exists():
-        with open(abstracts_file, "r") as infile:
-            return json.load(infile)
+        logging.info(f"Abstracts already retrived. Loading from {abstracts_file}.")
+        return retrived_abstract
         
     # get list of scopus ids
     dois = scopus_csv["DOI"].dropna().tolist()
 
+    # get list of dois already retrived
+    dois_retrived = [item["abstracts-retrieval-response"]["coredata"]["prism:doi"] for item in retrived_abstract]
+
     # get AbsDocs
-    output_list = []
+    output_list = retrived_abstract.copy()  # init output list
     for doi in tqdm(dois, desc="Getting abstracts"):
+        # check if doi is already retrived
+        if doi in dois_retrived:
+            logging.warning(f"DOI {doi} already retrived. Skipping.")
+            continue
+
         # get abstract metadata
         res = _manage_requests(url=f"{scopus_api_abstract_base_url}{doi}",
                                params={"apiKey": config["apikey"], 
@@ -261,9 +308,13 @@ def search_abstracts(config: dict,
         # Append to output list
         output_list.append(scp_abstract)
 
-    # Chache content to json
-    with open(abstracts_file, "w") as outfile:
-        json.dump(output_list, outfile, indent=4)
+        # Chache content to json
+        with open(abstracts_temp_file, "w") as outfile:
+            json.dump(output_list, outfile, indent=4)
+
+    # rename temp file
+    if abstracts_temp_file.exists():
+        abstracts_temp_file.rename(abstracts_file)
 
     # Return list of AbsDocs data
     return output_list
@@ -369,10 +420,25 @@ def get_affiliations(publications_list: List[dict],
     raw_df = raw_df.merge(n_publications, on="scopus_id", how="left").drop_duplicates(subset="scopus_id")
     raw_df.to_csv(institutions_file.parent / Path("institutions_raw.csv"), index=False)
 
+    # if available, load temp data
+    affiliation_temp_file = institutions_file.parent / Path("institutions_temp.json")
+    if affiliation_temp_file.exists():
+        with open(affiliation_temp_file, "r") as infile:
+            temp_data = json.load(infile)
+        retrived_scopus_ids = [item["institution-profile"]["@affiliation-id"] for item in temp_data]
+    else:
+        temp_data = []
+        retrived_scopus_ids = []
+
     # get more detailed information for each institution
-    output_data_list = []                           # init output list
-    output_json = []                                # init output json
+    output_data_list = temp_data                           # init output list
     for _, current_row in tqdm(raw_df.iterrows(), desc="Detailed info on insts"):
+        # check if scopus id is already retrived
+        if current_row["scopus_id"] in retrived_scopus_ids:
+            logging.warning(f"Affiliation with ID {current_row['scopus_id']} already retrived. Skipping.")
+            continue
+
+        # get affiliation metadata
         res = _manage_requests(url=f"{affiliation_retrival_url}{current_row['scopus_id']}",
                                params={"apiKey": config["apikey"], 
                                        "httpAccept": "application/json"})
@@ -397,15 +463,18 @@ def get_affiliations(publications_list: List[dict],
 
         # append to output files
         output_data_list.append(current_res_dict)
-        output_json.append(institute_data) 
+        
+        # save json
+        with open(affiliation_temp_file, "w") as outfile:
+            json.dump(output_data_list, outfile, indent=4)
 
     # save table
     output_df = pd.DataFrame(output_data_list)
     output_df.to_csv(institutions_file, index=False)
 
     # save json
-    with open(institutions_file.parent / Path("institutions.json"), "w") as outfile:
-        json.dump(output_json, outfile, indent=4)
+    if affiliation_temp_file.exists():
+        affiliation_temp_file.rename(institutions_file.parent / Path("institutions.json"))
 
     # return table
     return output_df
@@ -448,7 +517,7 @@ def get_funding_sponsors(publications_list: List[dict],
                 if isinstance(current_res_dict["xocs:funding-id"], list):
                     current_funding_id_list = []
                     for item in current_res_dict["xocs:funding-id"]:
-                        if isinstance(item, dict):
+                        if isinstance(item, dict) and (item["$"] is not None):
                             current_funding_id_list.append(item['$'])
                         if isinstance(item, str):
                             current_funding_id_list.append(item)
@@ -664,6 +733,12 @@ def search_journals_metrics(config: dict,
                                        "metricTypes": "PublicationsInTopJournalPercentiles,OutputsInTopCitationPercentiles",
                                        "sourceIds": ",".join(sublist),
                                        "yearRange": "10yrs"})
+        
+        # manage no access to the resource
+        if res.status_code == 403:
+            logging.warning("No access to Journal Metrics with this API KEY")
+            break
+
         output_list += res.json()["results"]
     
     # save json
@@ -675,11 +750,16 @@ def search_journals_metrics(config: dict,
 
 
 def extract_quartile_for_publications(publications_list: List[dict],
-                                      journals_metrics_dict: Path,
+                                      journals_metrics_dict: dict,
                                       publications_quartile_file: Path) -> pd.DataFrame:
     """
     Extract the quartile of each publication.
     """
+    # Check if journal metrics are available
+    if len(journals_metrics_dict) == 0:
+        logging.warning("No journal metrics, can retrive quartiles.")
+        return pd.DataFrame()
+    
     # init output list
     output_list = []
 
@@ -805,16 +885,16 @@ def extract_bibliographic_data(
     _check_query_count(config)
 
     # Get list of abstracts
-    publications_list = search_abstracts(config, scopus_csv, abstracts_file=abstracts_file, run_search=False)
+    publications_list = search_abstracts(config, scopus_csv, abstracts_file=abstracts_file, run_search=run_search)
 
     # Search journals
-    _ = generate_journals_csv(scopus_csv, journals_file, config, run_search=False)
+    _ = generate_journals_csv(scopus_csv, journals_file, config, run_search=run_search)
 
     # Search authors
     _ = get_authors(publications_list, authors_file=authors_file)
     
     # Search affiliations
-    _ = get_affiliations(publications_list, institutions_file=institutions_file, config=config, run_search=False)
+    _ = get_affiliations(publications_list, institutions_file=institutions_file, config=config, run_search=run_search)
 
     # Searc funding sponsors
     _ = get_funding_sponsors(publications_list, funding_sponsors_file=funding_sponsors_file)

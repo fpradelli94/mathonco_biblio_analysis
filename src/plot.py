@@ -1,11 +1,14 @@
 import re
 import json
+import logging
 from pathlib import Path
 from collections import Counter
 from tqdm import tqdm
-import pandas as pd
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
+
+logging.basicConfig(level=logging.INFO)
 
 CMAP = plt.get_cmap('tab10')
 
@@ -417,9 +420,12 @@ def plot_n_documents_in_time(scopus_df: pd.DataFrame,
     general_n_papers = pd.read_csv(general_n_papers_csv)
     cancer_n_papers = pd.read_csv(cancer_n_papers_csv)
 
-    # Normalize the number of documents on the year 1970
+    # Normalize the number of documents on the year 1975
     documents_per_year = documents_per_year.reset_index()
     normalizing_year = 1975
+    if not (normalizing_year in documents_per_year['Year'].to_list()):
+        logging.warning(f"Year {normalizing_year} not present in the dataset. Choosing the minimum year in the dataset.")
+        normalizing_year = documents_per_year['Year'].min()
     documents_per_year['Normalized'] = documents_per_year['Title'] / documents_per_year.loc[documents_per_year['Year'] == normalizing_year, 'Title'].values[0]
     general_n_papers['Normalized'] = general_n_papers['N_DOCS'] / general_n_papers.loc[general_n_papers['YEAR'] == normalizing_year, 'N_DOCS'].values[0]
     cancer_n_papers['Normalized'] = cancer_n_papers['N_DOCS'] / cancer_n_papers.loc[cancer_n_papers['YEAR'] == normalizing_year, 'N_DOCS'].values[0]
@@ -500,9 +506,13 @@ def generate_plots(data_folder: str,
     plot_regex_matches(scopus_df, expression_json, plot_title="Cancer types", output_file=f"{data_folder}/plot/cancer_types_plot.png")
 
     # get quartiles plot
-    publications_quartile_df = pd.read_csv(f"{data_folder}/publications_quartile.csv")
-    output_q_plot = f"{data_folder}/plot/quartiles_plot.png"
-    plot_quartiles(publications_quartile_df, output_file=output_q_plot)
+    publications_quartile_csv = Path(f"{data_folder}/publications_quartile.csv")
+    if publications_quartile_csv.exists():
+        publications_quartile_df = pd.read_csv(f"{data_folder}/publications_quartile.csv")
+        output_q_plot = f"{data_folder}/plot/quartiles_plot.png"
+        plot_quartiles(publications_quartile_df, output_file=output_q_plot)
+    else:
+        logging.warning(f"Could not plot quartiles, file {publications_quartile_csv} not exists.")
 
     # Generate plot for documents in time
     plot_n_documents_in_time(scopus_df, 

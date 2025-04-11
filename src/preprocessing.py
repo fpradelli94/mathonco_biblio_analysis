@@ -60,17 +60,37 @@ def check_coverage(scopus_csv: Path,
         print(infile.read())
 
 
-def pick_random_publications(csv_path: Path, out_folder: Path, n_samples: int = 20):
+def pick_random_publications(csv_path: Path, out_folder: Path, n_samples: int = 200):
     # get dataframe
     df = pd.read_csv(csv_path)
 
-    # pick 20 random publications
+    # init out excel file
+    out_file_name = csv_path.name.replace(".csv", "_random_samples.xlsx")
+    out_file = out_folder / Path(out_file_name)
+
+    # pick random publications 
     random_publications = df.sample(n=n_samples)
 
-    # write to csv
-    out_file_name = csv_path.name.replace(".csv", "_random20.csv")
-    out_file = out_folder / Path(out_file_name)
-    random_publications.to_csv(out_file, index=False)
+    # add empty columns for categories
+    random_publications["Is MathOnco? (broadly)"] = ""
+    random_publications["Category"] = ""
+    random_publications["Comment"] = ""
+
+    # rearrange the columns
+    cols = random_publications.columns.tolist()
+    # rearrange the columns to have the following order: Title, Authors, Is MathOnco? (broadly), Category, Comment, ...:
+    for col in ["Comment", "Category", "Is MathOnco? (broadly)", "Authors", "Title"]:
+        if col in cols:
+            cols.remove(col)
+            cols.insert(0, col)
+    random_publications = random_publications[cols]
+
+    # write to excel as different sheets
+    writing_mode = 'a' if out_file.exists() else 'w'
+    if_sheet_exists = 'replace' if out_file.exists() else None
+    with pd.ExcelWriter(out_file, mode=writing_mode, if_sheet_exists=if_sheet_exists) as writer:
+        sheet_name = f"random_{n_samples}"
+        random_publications.to_excel(writer, sheet_name=sheet_name, index=False)
 
 
 def get_scopus_string_for_mathonco_newsletter(bib_file: str):
@@ -84,6 +104,26 @@ def get_scopus_string_for_mathonco_newsletter(bib_file: str):
 
     return scopus_string
 
+def remove_incomplete_years(scopus_csv: Path):
+    """
+    Remove incomplete years from the Scopus data.
+    """
+    # Load Scopus data
+    scopus = pd.read_csv(scopus_csv)
+    scopus["Year"] = pd.to_datetime(scopus["Year"], format="%Y", errors="coerce").dt.year
+
+    # inform the user
+    print("Nullyears: ", scopus["Year"].isnull().sum())
+    print("Published over 2024:" , scopus[scopus["Year"] > 2024].shape[0])
+
+    # Remove incomplete years
+    scopus = scopus[scopus["Year"].notnull()]
+    scopus = scopus[scopus["Year"] < 2025]
+
+    # Overwrite CSV
+    scopus.to_csv(scopus_csv, index=False)
+
 
 if __name__ == "__main__":
-    print(get_scopus_string_for_mathonco_newsletter("data/MathOncoBibliograpy.bib"))
+    with open("out/newsletter_string", "w") as outfile:
+        outfile.write(get_scopus_string_for_mathonco_newsletter("data/MathOncoBibliograpy.bib"))
