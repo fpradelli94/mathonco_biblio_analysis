@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 from pathlib import Path
 from pybtex.database import parse_file
@@ -58,6 +59,15 @@ def check_coverage(scopus_csv: Path,
     # Print file content
     with open(tex_file, 'r') as infile:
         print(infile.read())
+
+    return len(scopus_titles)
+
+
+def margin_of_error(dataset_size: int):
+    sample_size = np.arange(100, 205, 5)
+    moe = (0.98 / sample_size) * np.sqrt((dataset_size - sample_size) / (dataset_size - 1))
+    for s_size, m in zip(sample_size, moe):
+        print(f"Sample size: {s_size}, Margin of error: {m:.4f}")
 
 
 def pick_random_publications(csv_path: Path, out_folder: Path, n_samples: int = 200):

@@ -1,21 +1,17 @@
 import numpy as np
 from pathlib import Path
 from src.query import extract_bibliographic_data
-from src.preprocessing import check_coverage, pick_random_publications, remove_incomplete_years
+from src.preprocessing import check_coverage, pick_random_publications, remove_incomplete_years, margin_of_error
 from src.plot import generate_plots
 
 
-def margin_of_error():
-    total_size = 16712
-    sample_size = np.arange(194, 200)
-    moe = (0.98 / sample_size) * np.sqrt((total_size - sample_size) / (total_size - 1))
-    print(moe)
+
 
 
 def main():
     # ------ Init ---------------
     # set the query number
-    query_number = '32'   
+    query_number = '34'   
 
     # create output folder                                    
     out_folder = Path(f"out/out_Query{query_number}")
@@ -42,8 +38,7 @@ def main():
         scopus_csv=scopus_csv,
         config_file=Path("config/config_moffitt01.json"),
         modeling_methods_file="data/methods.json",
-        run_search=True,
-        limit_entries_to=20
+        run_search=True
     )
 
     # ------ Visualization ------

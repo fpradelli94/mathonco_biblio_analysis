@@ -274,7 +274,7 @@ def search_abstracts(config: dict,
     """
     # load retrived abstracts if available
     abstracts_temp_file = Path(str(abstracts_file).replace(".json", "_temp.json"))
-    if abstracts_file.exists():
+    if abstracts_temp_file.exists():
         with open(abstracts_temp_file, "r") as infile:
             retrived_abstract = json.load(infile)
     else: 
@@ -282,7 +282,9 @@ def search_abstracts(config: dict,
 
     if not run_search and abstracts_file.exists():
         logging.info(f"Abstracts already retrived. Loading from {abstracts_file}.")
-        return retrived_abstract
+        with open(abstracts_file, "r") as infile:
+            output_list = json.load(infile)
+        return output_list
         
     # get list of scopus ids
     dois = scopus_csv["DOI"].dropna().tolist()
@@ -304,6 +306,11 @@ def search_abstracts(config: dict,
                                        "httpAccept": "application/json", 
                                        "view": "FULL"})
         scp_abstract = res.json()
+
+        # check if resource could be found
+        if "service-error" in list(scp_abstract.keys()):
+            logging.warning(f"Abstract for doi {doi} not found. Skipping...") 
+            continue
 
         # Append to output list
         output_list.append(scp_abstract)
